@@ -7,7 +7,17 @@ from langchain.prompts import ChatPromptTemplate
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(title="Modular RAG with Access Control")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 CHROMA_PATH = "./chroma_db"
 LLM_MODEL = "qwen2.5:0.5b" 

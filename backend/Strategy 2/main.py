@@ -7,7 +7,17 @@ from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain.prompts import ChatPromptTemplate
 from langchain.chains.combine_documents import create_stuff_documents_chain
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(title="Modular RAG Strategy 2: Post-Retrieval Filtering")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 CHROMA_PATH = os.path.join(os.path.dirname(__file__), "chroma_db_s2")
 LLM_MODEL = "qwen2.5:0.5b"
