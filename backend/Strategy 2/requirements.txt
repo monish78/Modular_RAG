@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pydantic
+langchain-chroma
+langchain-ollama
+langchain
+langfuse
+python-dotenv

@@ -6,8 +6,13 @@ from langchain_chroma import Chroma
 from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain.prompts import ChatPromptTemplate
 from langchain.chains.combine_documents import create_stuff_documents_chain
+import re
 
 from fastapi.middleware.cors import CORSMiddleware
+from langfuse.callback import CallbackHandler
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI(title="Modular RAG Strategy 2: Post-Retrieval Filtering")
 
@@ -45,6 +50,53 @@ embeddings = OllamaEmbeddings(model=EMBED_MODEL)
 vector_db = Chroma(persist_directory=CHROMA_PATH, embedding_function=embeddings)
 llm = ChatOllama(model=LLM_MODEL)
 
+# Initialize Langfuse Callback Handler
+langfuse_handler = CallbackHandler(
+    public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
+    secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
+    host=os.getenv("LANGFUSE_HOST")
+)
+
+def apply_guardrails(prompt: str):
+    """
+    Advanced Guardrail Suite:
+    1. Prompt Injection Protection
+    2. PII Detection (Emails)
+    3. Malicious Keyword Detection
+    """
+    # 1. Prompt Injection Patterns
+    injection_patterns = [
+        r"ignore (all )?previous instructions",
+        r"system override",
+        r"new role:",
+        r"you are now (an )?expert in",
+        r"instead of your instructions"
+    ]
+    for pattern in injection_patterns:
+        if re.search(pattern, prompt, re.IGNORECASE):
+            return False, "Guardrail Exception: Potential Prompt Injection detected."
+
+    # 2. PII Detection (Email)
+    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+    if re.search(email_pattern, prompt):
+        return False, "Guardrail Exception: PII (Email address) detected in prompt. Please remove sensitive information."
+
+    # 3. Prohibited Keywords
+    prohibited_keywords = ["delete", "drop table", "system bypass", "unauthorized access"]
+    for keyword in prohibited_keywords:
+        if keyword in prompt.lower():
+            return False, f"Guardrail Exception: Prohibited term '{keyword}' detected."
+            
+    return True, ""
+
+def sanitize_output(content: str):
+    """Simple output guardrail to prevent leaking sensitive info."""
+    internal_secrets = ["CONFIDENTIAL_PROJECT_X", "INTERNAL_API_KEY_123"]
+    sanitized = content
+    for secret in internal_secrets:
+        sanitized = sanitized.replace(secret, "[REDACTED]")
+    return sanitized
+
 # Define prompt
 system_prompt = (
     "You are an assistant for question-answering tasks. "
@@ -64,11 +116,22 @@ prompt = ChatPromptTemplate.from_messages([
 async def query_rag(request: QueryRequest):
     user_name = request.user_name.lower()
     
+    # 0. Apply Guardrails
+    is_safe, message = apply_guardrails(request.user_prompt)
+    if not is_safe:
+        # Trace the rejection in Langfuse
+        langfuse_handler.langfuse.generation(
+            name="guardrail_rejection",
+            input=request.user_prompt,
+            output=message,
+            metadata={"user": user_name}
+        )
+        return {"response": message, "sources": []}
+
     # Reload permissions on each request for full dynamism
     permissions = load_permissions()
     
     # 1. Retrieve chunks (no filter)
-    # Increase k to ensure we find authorized docs even if they aren't top results
     relevant_docs = vector_db.similarity_search(request.user_prompt, k=10)
     
     # 2. Filter authorized chunks
@@ -83,9 +146,15 @@ async def query_rag(request: QueryRequest):
     if not authorized_docs:
         return {"response": "you cannot access this file", "sources": []}
     
-    # 4. Generate response
+    # 4. Generate response with Langfuse tracing
     qa_chain = create_stuff_documents_chain(llm, prompt)
-    response = qa_chain.invoke({"input": request.user_prompt, "context": authorized_docs})
+    raw_response = qa_chain.invoke(
+        {"input": request.user_prompt, "context": authorized_docs},
+        config={"callbacks": [langfuse_handler]}
+    )
+    
+    # Apply Output Guardrail
+    response = sanitize_output(raw_response)
     
     return {
         "response": response,
